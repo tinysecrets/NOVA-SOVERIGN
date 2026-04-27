@@ -1,87 +1,73 @@
-# Genie · Personal AI Sidekick
+# NOVA
 
-Your own uncensored, multi-LLM AI sidekick. Magical persona, conversation memory,
-hot-swappable brains (Cerebras / Venice / Ollama), pluggable tools.
+Your personal AI assistant. Private by default. Runs on your own machine.
 
-A minimal, opinionated, deploy-anywhere FastAPI + React app. No bloat.
+**Features**
+- Chat with conversation memory + session history
+- Notes with AI summaries
+- Tasks with AI prioritization
+- Document Q&A (paste text or upload PDFs/TXT)
+- 6 built-in personas (NOVA, Coach, Tutor, Coder, Writer, Strategist)
+- Multi-model picker (local Ollama models or cloud via Emergent Universal Key)
+- Bento-grid briefing dashboard
 
-```
-genie-sidekick/
-├── backend/    FastAPI · JWT auth · MongoDB history · OpenAI-compatible multi-provider LLM
-└── frontend/   React + Vite chat UI · session sidebar · provider switcher
-```
+**Stack**
+- Backend: FastAPI + MongoDB + JWT auth
+- Frontend: React + Vite + Tailwind
+- LLM: local Ollama (default) or Emergent Universal Key (GPT-5.2 / Claude / Gemini)
 
-## Quick start (local dev)
+## Run locally (recommended)
 
-### 1. Backend
+Fully offline. Private by construction. See **[LOCAL.md](./LOCAL.md)** for the
+complete walkthrough. TL;DR:
+
 ```bash
+cp .env.example .env        # edit: ADMIN_EMAIL, ADMIN_PASSWORD, JWT_SECRET
+ollama serve &              # on your host
+ollama pull llama3.1:8b
+docker compose up -d --build
+open http://127.0.0.1:3000
+```
+
+## Run in dev mode (hot reload)
+
+```bash
+# Backend
 cd backend
-python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
-# edit .env — at minimum set ADMIN_EMAIL, ADMIN_PASSWORD, JWT_SECRET, MONGO_URL
-# and ONE of: CEREBRAS_API_KEY, VENICE_API_KEY, OLLAMA_BASE_URL
-uvicorn server:app --reload --port 8000
+# Create backend/.env (see backend/.env in repo for template)
+uvicorn server:app --reload --port 8001
+
+# Frontend
+cd ../frontend
+yarn install
+# Create frontend/.env with:  REACT_APP_BACKEND_URL=http://localhost:8001
+yarn dev
+# Open http://localhost:3000
 ```
 
-You need a MongoDB instance. Easiest options:
-- Local: `brew install mongodb-community && brew services start mongodb-community`
-- Free cloud: [MongoDB Atlas M0](https://www.mongodb.com/atlas) free tier
-- Docker: `docker run -d -p 27017:27017 --name genie-mongo mongo:7`
+## Configuration
 
-### 2. Frontend
-```bash
-cd frontend
-npm install
-cp .env.example .env
-# edit .env — set VITE_BACKEND_URL=http://localhost:8000
-npm run dev
-```
+Edit `.env` in the project root (used by `docker compose`), or
+`backend/.env` (used in dev mode):
 
-Visit `http://localhost:5173`, log in with the admin email/password from your backend `.env`.
+| Variable          | Values                     | Description                    |
+|-------------------|----------------------------|--------------------------------|
+| `LLM_BACKEND`     | `ollama` \| `emergent`     | Which LLM runtime to use       |
+| `OLLAMA_BASE_URL` | URL                        | Your Ollama server             |
+| `OLLAMA_MODELS`   | comma-separated tags       | Models shown in the picker     |
+| `EMERGENT_LLM_KEY`| key string                 | Universal key for cloud models |
+| `ADMIN_EMAIL`     | email                      | Your login email               |
+| `ADMIN_PASSWORD`  | string                     | Your login password            |
+| `JWT_SECRET`      | long random string         | Session-token signing key      |
 
-## Brains (LLM providers)
+## Privacy posture
 
-Genie picks the first enabled provider in this priority order: **Ollama → Venice → Cerebras**.
-You can override per-message in the UI.
-
-| Provider | Speed | Censorship | Cost | Setup |
-|---|---|---|---|---|
-| **Cerebras** | 🚀 fastest | mild | very cheap | API key from [cloud.cerebras.ai](https://cloud.cerebras.ai) |
-| **Venice** | medium | none (uncensored by design) | $20/mo Pro | API key from [venice.ai/settings/api](https://venice.ai/settings/api) |
-| **Ollama** | depends on your hardware | depends on model | free | Run `ollama serve` locally; expose via tunnel for remote |
-
-Set whichever you want in `backend/.env`. Empty entries are skipped automatically.
-
-## Adding tools
-
-Tools let Genie call your code mid-conversation. Add one in `backend/server.py`:
-
-```python
-async def tool_get_weather(args):
-    city = args.get("city", "").strip()
-    # ... your code ...
-    return {"city": city, "temp_f": 72, "summary": "sunny"}
-
-TOOLS["get_weather"] = tool_get_weather
-```
-
-Update the system prompt's `TOOLS AVAILABLE` section so Genie knows it exists. Genie
-emits `<<TOOL name=get_weather args={"city":"Miami"} />>` and you handle the rest.
-
-## Deploy
-
-- **Backend**: Render / Fly.io / Railway. Free tiers all work. Add `backend/.env` vars in their dashboard.
-- **Frontend**: Vercel / Netlify / Cloudflare Pages. Set `VITE_BACKEND_URL` to your backend's public URL at build time.
-- **Database**: MongoDB Atlas M0 (free, 512MB).
-
-## Security notes
-
-- Single-user app: only the `ADMIN_EMAIL` from `.env` can log in. No registration.
-- JWTs expire after 12h. Re-login required after.
-- All chat history is keyed by `user_id` in MongoDB. Wipe with `db.messages.drop()`.
+- Data lives in a local Mongo container volume (`./data/mongo`).
+- In Ollama mode, no prompts leave your machine.
+- The app listens on `127.0.0.1` — not reachable from your LAN.
+- Single-user only. The only account is `ADMIN_EMAIL`.
 
 ## License
 
-Private. Don't ship Genie's persona to third-party platforms without revising the
-system prompt — it's deliberately uncensored for personal use.
+Private / personal use.

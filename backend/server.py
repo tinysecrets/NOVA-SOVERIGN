@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 from pypdf import PdfReader
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from openai import AsyncOpenAI
 
 load_dotenv()
 
@@ -49,14 +50,54 @@ EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
 CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
 
+# LLM backend selection: "emergent" (cloud via Emergent Universal Key) or "ollama" (fully local)
+LLM_BACKEND = os.environ.get("LLM_BACKEND", "emergent").strip().lower()
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+OLLAMA_MODELS = [
+    m.strip() for m in os.environ.get("OLLAMA_MODELS", "llama3.1:8b").split(",") if m.strip()
+]
+
 # ---------- model registry ----------
-MODELS = {
+_EMERGENT_MODELS = {
     "gpt-5.2": {"provider": "openai", "model": "gpt-5.2", "label": "GPT-5.2", "vendor": "OpenAI"},
     "claude-sonnet-4-5": {"provider": "anthropic", "model": "claude-sonnet-4-5-20250929", "label": "Claude Sonnet 4.5", "vendor": "Anthropic"},
     "gemini-2.5-pro": {"provider": "gemini", "model": "gemini-2.5-pro", "label": "Gemini 2.5 Pro", "vendor": "Google"},
     "gemini-2.5-flash": {"provider": "gemini", "model": "gemini-2.5-flash", "label": "Gemini 2.5 Flash", "vendor": "Google"},
 }
-DEFAULT_MODEL = "gpt-5.2"
+
+
+def _pretty_ollama_label(tag: str) -> str:
+    base = tag.split(":")[0]
+    return base.replace("-", " ").title() + (f" ({tag.split(':',1)[1]})" if ":" in tag else "")
+
+
+def _build_models() -> Dict[str, Dict[str, str]]:
+    if LLM_BACKEND == "ollama":
+        return {
+            tag: {
+                "provider": "ollama",
+                "model": tag,
+                "label": _pretty_ollama_label(tag),
+                "vendor": "Ollama · local",
+            }
+            for tag in OLLAMA_MODELS
+        } or {
+            "llama3.1:8b": {
+                "provider": "ollama",
+                "model": "llama3.1:8b",
+                "label": "Llama 3.1 8B",
+                "vendor": "Ollama · local",
+            }
+        }
+    return _EMERGENT_MODELS
+
+
+MODELS = _build_models()
+DEFAULT_MODEL = (
+    next(iter(MODELS)) if LLM_BACKEND == "ollama" else "gpt-5.2"
+)
+
+logger.info("LLM backend: %s · default model: %s", LLM_BACKEND, DEFAULT_MODEL)
 
 # ---------- personas ----------
 PERSONAS = {
@@ -233,11 +274,30 @@ def resolve_model(model_key: Optional[str]) -> Dict[str, str]:
 async def llm_once(system_prompt: str, user_text: str, model_key: Optional[str] = None) -> str:
     """One-shot LLM call (no history) for utility tasks like summarize/prioritize."""
     m = resolve_model(model_key)
+    return await _dispatch_llm(system=system_prompt, user_text=user_text, model_info=m)
+
+
+async def _dispatch_llm(system: str, user_text: str, model_info: Dict[str, str]) -> str:
+    """Route a single-turn call to the right backend."""
+    if model_info["provider"] == "ollama":
+        client = AsyncOpenAI(api_key="ollama", base_url=f"{OLLAMA_BASE_URL}/v1")
+        resp = await client.chat.completions.create(
+            model=model_info["model"],
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_text},
+            ],
+            temperature=0.6,
+        )
+        return (resp.choices[0].message.content or "").strip()
+    # Emergent Universal Key path
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(500, "EMERGENT_LLM_KEY is not configured")
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,
         session_id=f"oneshot-{uuid.uuid4()}",
-        system_message=system_prompt,
-    ).with_model(m["provider"], m["model"])
+        system_message=system,
+    ).with_model(model_info["provider"], model_info["model"])
     return await chat.send_message(UserMessage(text=user_text))
 
 
@@ -260,6 +320,7 @@ async def me(user=Depends(get_current_user)):
 @api.get("/meta/models")
 async def list_models(_user=Depends(get_current_user)):
     return {
+        "backend": LLM_BACKEND,
         "default": DEFAULT_MODEL,
         "models": [{"id": k, **v} for k, v in MODELS.items()],
     }
@@ -325,7 +386,7 @@ async def delete_session(session_id: str, user=Depends(get_current_user)):
 
 @api.post("/chat")
 async def chat(req: ChatRequest, user=Depends(get_current_user)):
-    if not EMERGENT_LLM_KEY:
+    if LLM_BACKEND == "emergent" and not EMERGENT_LLM_KEY:
         raise HTTPException(500, "LLM key not configured on server")
 
     persona_key = req.persona if req.persona in PERSONAS else "default"
@@ -356,31 +417,44 @@ async def chat(req: ChatRequest, user=Depends(get_current_user)):
         .to_list(length=40)
     )
 
-    # Build a transcript of the prior turns and include it in the system prompt so
-    # the model has full conversational context even with a fresh LlmChat instance.
-    history_txt = ""
-    # prior includes the just-inserted user turn as the last entry; exclude it
-    past = prior[:-1][-20:]  # last 20 messages of history
-    if past:
-        lines = []
-        for m in past:
-            role = "User" if m["role"] == "user" else "NOVA"
-            lines.append(f"{role}: {m['content']}")
-        history_txt = "\n".join(lines)
-
     system = persona["system"]
-    if history_txt:
-        system += f"\n\nPRIOR CONVERSATION (for context):\n{history_txt}"
     if req.context:
         system += f"\n\nCONTEXT DOCUMENT the user is discussing:\n{req.context[:8000]}"
 
     try:
-        chat_obj = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=session_id,
-            system_message=system,
-        ).with_model(model_info["provider"], model_info["model"])
-        reply_text = await chat_obj.send_message(UserMessage(text=req.message))
+        if model_info["provider"] == "ollama":
+            # Native multi-turn via OpenAI-compatible Ollama endpoint
+            client = AsyncOpenAI(api_key="ollama", base_url=f"{OLLAMA_BASE_URL}/v1")
+            messages = [{"role": "system", "content": system}]
+            for m in prior[:-1][-20:]:  # last 20 prior turns (exclude the just-inserted user msg)
+                if m["role"] in ("user", "assistant"):
+                    messages.append({"role": m["role"], "content": m["content"]})
+            messages.append({"role": "user", "content": req.message})
+            resp = await client.chat.completions.create(
+                model=model_info["model"],
+                messages=messages,
+                temperature=0.6,
+            )
+            reply_text = (resp.choices[0].message.content or "").strip()
+        else:
+            # Emergent path: embed history in system prompt so each call is stateless but contextual
+            past = prior[:-1][-20:]
+            if past:
+                lines = []
+                for m in past:
+                    role = "User" if m["role"] == "user" else "NOVA"
+                    lines.append(f"{role}: {m['content']}")
+                system_with_history = system + "\n\nPRIOR CONVERSATION (for context):\n" + "\n".join(lines)
+            else:
+                system_with_history = system
+            chat_obj = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=session_id,
+                system_message=system_with_history,
+            ).with_model(model_info["provider"], model_info["model"])
+            reply_text = await chat_obj.send_message(UserMessage(text=req.message))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("LLM error")
         raise HTTPException(502, f"LLM error: {str(e)[:200]}")
@@ -709,9 +783,35 @@ async def health():
     return {
         "status": "ok",
         "service": "nova",
+        "backend": LLM_BACKEND,
+        "default_model": DEFAULT_MODEL,
         "ts": datetime.now(timezone.utc).isoformat(),
-        "llm_configured": bool(EMERGENT_LLM_KEY),
+        "llm_configured": LLM_BACKEND == "ollama" or bool(EMERGENT_LLM_KEY),
     }
 
 
 app.include_router(api)
+
+
+# ---------- static frontend (local/docker single-port mode) ----------
+FRONTEND_DIR = os.environ.get("FRONTEND_DIR", "")
+if FRONTEND_DIR and os.path.isdir(FRONTEND_DIR):
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import FileResponse
+
+    _assets = os.path.join(FRONTEND_DIR, "assets")
+    if os.path.isdir(_assets):
+        app.mount("/assets", StaticFiles(directory=_assets), name="frontend_assets")
+    _index_html = os.path.join(FRONTEND_DIR, "index.html")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(404)
+        if full_path:
+            candidate = os.path.join(FRONTEND_DIR, full_path)
+            if os.path.isfile(candidate):
+                return FileResponse(candidate)
+        return FileResponse(_index_html)
+
+    logger.info("Serving built frontend from %s", FRONTEND_DIR)
