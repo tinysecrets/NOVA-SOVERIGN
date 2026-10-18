@@ -31,3 +31,7 @@ credentials.json
 *.pem
 *.key
 .credentials
+
+# Safe environment templates are source; real .env files remain ignored.
+!.env.example
+!**/.env.example

@@ -14,7 +14,7 @@ Your personal AI assistant. Private by default. Runs on your own machine.
 **Stack**
 - Backend: FastAPI + MongoDB + JWT auth
 - Frontend: React + Vite + Tailwind
-- LLM: local Ollama (default) or Emergent Universal Key (GPT-5.2 / Claude / Gemini)
+- LLM: local Ollama by default; Emergent Universal Key is an explicit cloud opt-in
 
 ## Run locally (recommended)
 
@@ -53,13 +53,17 @@ Edit `.env` in the project root (used by `docker compose`), or
 
 | Variable          | Values                     | Description                    |
 |-------------------|----------------------------|--------------------------------|
-| `LLM_BACKEND`     | `ollama` \| `emergent`     | Which LLM runtime to use       |
+| `LLM_BACKEND`     | `ollama` (default) \| `emergent` (explicit opt-in) | Which LLM runtime to use |
 | `OLLAMA_BASE_URL` | URL                        | Your Ollama server             |
 | `OLLAMA_MODELS`   | comma-separated tags       | Models shown in the picker     |
 | `EMERGENT_LLM_KEY`| key string                 | Universal key for cloud models |
 | `ADMIN_EMAIL`     | email                      | Your login email               |
 | `ADMIN_PASSWORD`  | string                     | Your login password            |
 | `JWT_SECRET`      | long random string         | Session-token signing key      |
+
+## Tests
+
+Install test-only dependencies with `pip install -r backend/requirements-dev.txt`. The backend HTTP integration suite is skipped by default because it creates/deletes sessions and other app records and may call the configured inference backend. Run it only against a disposable test deployment by setting `NOVA_TEST_API_URL`, `NOVA_TEST_ALLOW_MUTATIONS=1`, `NOVA_TEST_EMAIL`, `NOVA_TEST_PASSWORD`, and (when testing a non-default local model) `NOVA_TEST_EXPECTED_MODEL` / `NOVA_TEST_EXPECTED_MODELS`. The test suite contains no embedded account password and no longer falls back to a frontend `.env` URL.
 
 ## Privacy posture
 

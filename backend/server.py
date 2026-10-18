@@ -40,18 +40,39 @@ logger = logging.getLogger("nova")
 # ---------- env ----------
 MONGO_URL = os.environ.get("MONGO_URL")
 DB_NAME = os.environ.get("DB_NAME")
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev-insecure-change-me")
+JWT_SECRET = (os.environ.get("JWT_SECRET") or "").strip()
+if (
+    len(JWT_SECRET) < 32
+    or JWT_SECRET == "dev-insecure-change-me"
+    or "replace" in JWT_SECRET.lower()
+    or "change-me" in JWT_SECRET.lower()
+):
+    raise RuntimeError("JWT_SECRET must be a non-placeholder random secret of at least 32 characters")
 JWT_ALG = "HS256"
 JWT_TTL_HOURS = 24 * 7
 
 ADMIN_EMAIL = (os.environ.get("ADMIN_EMAIL") or "").strip().lower()
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD") or ""
+if not ADMIN_EMAIL or not ADMIN_PASSWORD or ADMIN_EMAIL == "you@example.com" or ADMIN_PASSWORD == "replace-before-starting":
+    raise RuntimeError("Set a real ADMIN_EMAIL and ADMIN_PASSWORD before starting NOVA")
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
-CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
+_DEFAULT_CORS_ORIGINS = (
+    "http://127.0.0.1:3000,http://localhost:3000,"
+    "http://127.0.0.1:5173,http://localhost:5173"
+)
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in (os.environ.get("CORS_ORIGINS") or _DEFAULT_CORS_ORIGINS).split(",")
+    if origin.strip()
+]
+if "*" in CORS_ORIGINS:
+    raise RuntimeError("CORS_ORIGINS must list explicit trusted UI origins; wildcards are forbidden")
 
 # LLM backend selection: "emergent" (cloud via Emergent Universal Key) or "ollama" (fully local)
-LLM_BACKEND = os.environ.get("LLM_BACKEND", "emergent").strip().lower()
+LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama").strip().lower()
+if LLM_BACKEND not in {"ollama", "emergent"}:
+    raise RuntimeError("LLM_BACKEND must be 'ollama' (default) or explicitly opt in to 'emergent'")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_MODELS = [
     m.strip() for m in os.environ.get("OLLAMA_MODELS", "llama3.1:8b").split(",") if m.strip()
@@ -180,7 +201,7 @@ db = mongo_client[DB_NAME]
 app = FastAPI(title="NOVA API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS or ["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

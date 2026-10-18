@@ -8,22 +8,26 @@ import time
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
-if not BASE_URL:
-    # Fallback to frontend .env
-    try:
-        with open("/app/frontend/.env") as f:
-            for ln in f:
-                if ln.startswith("REACT_APP_BACKEND_URL="):
-                    BASE_URL = ln.split("=", 1)[1].strip().rstrip("/")
-                    break
-    except Exception:
-        pass
-
-API = f"{BASE_URL}/api"
-EMAIL = "boss@nova.app"
-PASSWORD = "NovaBoss2026!"
-TIMEOUT = 90
+BASE_URL = (os.environ.get("NOVA_TEST_API_URL") or "").rstrip("/")
+ALLOW_MUTATIONS = os.environ.get("NOVA_TEST_ALLOW_MUTATIONS") == "1"
+EMAIL = os.environ.get("NOVA_TEST_EMAIL")
+PASSWORD = os.environ.get("NOVA_TEST_PASSWORD")
+pytestmark = pytest.mark.skipif(
+    not BASE_URL or not ALLOW_MUTATIONS or not EMAIL or not PASSWORD,
+    reason=(
+        "integration tests mutate account/session/chat/task data and may call configured inference; "
+        "set NOVA_TEST_API_URL to a disposable test deployment, "
+        "NOVA_TEST_ALLOW_MUTATIONS=1, and NOVA_TEST_EMAIL/NOVA_TEST_PASSWORD to opt in"
+    ),
+)
+API = f"{BASE_URL}/api" if BASE_URL else ""
+EXPECTED_MODEL = (os.environ.get("NOVA_TEST_EXPECTED_MODEL") or "llama3.1:8b").strip()
+EXPECTED_MODELS = {
+    model.strip()
+    for model in (os.environ.get("NOVA_TEST_EXPECTED_MODELS") or EXPECTED_MODEL).split(",")
+    if model.strip()
+}
+TIMEOUT = 30
 
 
 # ---------- fixtures ----------
@@ -75,9 +79,9 @@ class TestMeta:
         r = requests.get(f"{API}/meta/models", headers=auth_headers, timeout=TIMEOUT)
         assert r.status_code == 200
         body = r.json()
-        assert body.get("default") == "gpt-5.2"
+        assert body.get("default") == EXPECTED_MODEL
         ids = {m["id"] for m in body.get("models", [])}
-        assert {"gpt-5.2", "claude-sonnet-4-5", "gemini-2.5-pro", "gemini-2.5-flash"}.issubset(ids)
+        assert EXPECTED_MODELS.issubset(ids)
 
     def test_personas(self, auth_headers):
         r = requests.get(f"{API}/meta/personas", headers=auth_headers, timeout=TIMEOUT)
@@ -100,7 +104,7 @@ class TestChat:
         body = r.json()
         assert body.get("session_id")
         assert body.get("reply")
-        assert body.get("model") == "gpt-5.2"
+        assert body.get("model") == EXPECTED_MODEL
         TestChat.session_id = body["session_id"]
 
         # history reflects 2 messages in order
